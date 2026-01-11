@@ -1,357 +1,319 @@
 import streamlit as st
-import streamlit_authenticator as stauth
-import yaml
-from yaml.loader import SafeLoader
-import yfinance as yf
 import pandas as pd
-from streamlit_gsheets import GSheetsConnection  # 👈 新增這個：Google Sheets 連線工具
-from datetime import datetime
-import pytz
+import yfinance as yf
+import xlsxwriter
 import plotly.express as px
+import plotly.graph_objects as go
+from io import BytesIO
+from datetime import datetime
+import os
 
-# ==========================================
-# 0. 基礎設定與雲端連線
-# ==========================================
-st.set_page_config(
-    page_title="投資戰情室", 
-    layout="wide",
-    menu_items={'About': "# 這是您的私人資產戰情室"}
-)
-
-# 👇 建立 Google Sheets 連線 (這是最關鍵的一行)
-conn = st.connection("gsheets", type=GSheetsConnection)
-
-DEFAULT_FINANCIALS = {"loan": 0.0, "cash_account": 0.0, "cash_settlement": 0.0, "cash_usd": 0.0}
-
-# ==========================================
-# 1. 工具函式 (已雲端化)
-# ==========================================
-def load_financials():
-    """從 Google Sheets 讀取財務數據"""
-    try:
-        # 讀取 financials 分頁，ttl=0 代表不快取，每次都抓最新的
-        df = conn.read(worksheet="financials", ttl=0)
-        if df.empty:
-            return DEFAULT_FINANCIALS
-        # 轉換成字典格式
-        return df.set_index('category')['amount'].to_dict()
-    except Exception:
-        return DEFAULT_FINANCIALS
-
-def save_financials(data_dict):
-    """將財務數據寫回 Google Sheets"""
-    # 轉成 DataFrame
-    df = pd.DataFrame(list(data_dict.items()), columns=['category', 'amount'])
-    try:
-        # 更新 financials 分頁
-        conn.update(worksheet="financials", data=df)
-    except Exception as e:
-        st.error(f"寫入失敗: {e}")
-
-def check_market_status():
-    utc_now = datetime.now(pytz.utc)
-    tw_tz = pytz.timezone('Asia/Taipei')
-    us_tz = pytz.timezone('US/Eastern')
-    uk_tz = pytz.timezone('Europe/London')
-
-    tw_time = utc_now.astimezone(tw_tz)
-    us_time = utc_now.astimezone(us_tz)
-    uk_time = utc_now.astimezone(uk_tz)
-
-    def is_open(current_time, start_h, start_m, end_h, end_m):
-        if current_time.weekday() >= 5: return False, "休市 (週末)"
-        curr_min = current_time.hour * 60 + current_time.minute
-        if (start_h * 60 + start_m) <= curr_min <= (end_h * 60 + end_m):
-            return True, "🟢 開盤中"
-        return False, "🔴 已收盤"
-
-    us_open, us_msg = is_open(us_time, 9, 30, 16, 0)
-    uk_open, uk_msg = is_open(uk_time, 8, 0, 16, 30)
-
-    return {
-        "tw_str": tw_time.strftime("%Y/%m/%d %H:%M:%S"),
-        "us_status": us_msg, "us_time_str": us_time.strftime("%H:%M"),
-        "uk_status": uk_msg, "uk_time_str": uk_time.strftime("%H:%M")
-    }
-
-# ==========================================
-# 2. 初始資產 (這部分維持不變)
-# ==========================================
-INITIAL_ASSETS = [
-    {"code": "0050.TW", "cost": 52.28, "qty": 30000, "currency": "TWD", "type": "台股"},
-    {"code": "006208.TW", "cost": 114.56, "qty": 4623, "currency": "TWD", "type": "台股"},
-    {"code": "2330.TW", "cost": 1435.28, "qty": 140, "currency": "TWD", "type": "台股"},
-    {"code": "00679B.TW", "cost": 26.74, "qty": 11236, "currency": "TWD", "type": "債券"},
-    {"code": "00719B.TW", "cost": 29.77, "qty": 14371, "currency": "TWD", "type": "債券"},
-    {"code": "00720B.TW", "cost": 33.80, "qty": 8875, "currency": "TWD", "type": "債券"},
-    {"code": "VT", "cost": 133.46, "qty": 139, "currency": "USD", "type": "全球ETF"},
-    {"code": "SGOV", "cost": 100.53, "qty": 81.00, "currency": "USD", "type": "美債"},
-    {"code": "TSLA", "cost": 296.38, "qty": 3.00, "currency": "USD", "type": "美股"},
-    {"code": "GOOGL", "cost": 290.13, "qty": 2.00, "currency": "USD", "type": "美股"},
-    {"code": "GOOGL", "cost": 236.48, "qty": 34.00, "currency": "USD", "type": "美股"},
-    {"code": "TSLA", "cost": 424.45, "qty": 10.00, "currency": "USD", "type": "美股"},
-    {"code": "VWRA.L", "cost": 169.84, "qty": 144.0206, "currency": "USD", "type": "全球ETF"},
-    {"code": "IBKR", "cost": 64.37, "qty": 3.8374, "currency": "USD", "type": "美股"},
-    {"code": "TSLA", "cost": 445.04, "qty": 5.5456, "currency": "USD", "type": "美股"},
-    {"code": "GOOG", "cost": 314.35, "qty": 4.5746, "currency": "USD", "type": "美股"},
-    {"code": "VTI", "cost": 334.91, "qty": 3.6547, "currency": "USD", "type": "美股ETF"},
-    {"code": "SGOV", "cost": 100.54, "qty": 9.9463, "currency": "USD", "type": "美債"},
-    {"code": "BTC-USD", "cost": 0.00, "qty": 0.0477, "currency": "USD", "type": "加密貨幣"},
+# ==========================================================
+# 0) 初始資料設定 (V7.1 - 包含 006208 等最新變動)
+# ==========================================================
+DEFAULT_HOLDINGS = [
+    # 台股
+    {"Symbol": "0050.TW",   "Name": "元大台灣50",        "Type": "股票",   "Region": "台股", "Platform": "元大(台股)",       "Account": "TWD帳戶",     "Currency": "TWD", "Cost": 1568276,   "Shares": 30000.0,    "GroupKey": "0050/006208 (大盤)"},
+    {"Symbol": "006208.TW", "Name": "富邦台50",          "Type": "股票",   "Region": "台股", "Platform": "元大(台股)",       "Account": "TWD帳戶",     "Currency": "TWD", "Cost": 344534,    "Shares": 2873.0,     "GroupKey": "0050/006208 (大盤)"},
+    {"Symbol": "2330.TW",   "Name": "台積電",            "Type": "股票",   "Region": "台股", "Platform": "元大(台股)",       "Account": "TWD帳戶",     "Currency": "TWD", "Cost": 200939,    "Shares": 140.0,      "GroupKey": "2330 (台積電)"},
+    {"Symbol": "00679B.TW", "Name": "元大美債20年",      "Type": "債券",   "Region": "台股", "Platform": "元大(台股)",       "Account": "TWD帳戶",     "Currency": "TWD", "Cost": 300412,    "Shares": 11236.0,    "GroupKey": "台股債券 (美債+投等)"},
+    {"Symbol": "00719B.TW", "Name": "元大美債1-3年",     "Type": "債券",   "Region": "台股", "Platform": "元大(台股)",       "Account": "TWD帳戶",     "Currency": "TWD", "Cost": 427779,    "Shares": 14371.0,    "GroupKey": "台股債券 (美債+投等)"},
+    {"Symbol": "00720B.TW", "Name": "元大投資級公司債",  "Type": "債券",   "Region": "台股", "Platform": "元大(台股)",       "Account": "TWD帳戶",     "Currency": "TWD", "Cost": 299979,    "Shares": 8875.0,     "GroupKey": "台股債券 (美債+投等)"},
+    
+    # 複委託 (美股/全球) - 注意 SGOV 已清空
+    {"Symbol": "VT",        "Name": "Vanguard全球",      "Type": "股票",   "Region": "全球", "Platform": "元大複委託(美股)", "Account": "USD外幣帳戶", "Currency": "USD", "Cost": 18551.05,  "Shares": 139.0,      "GroupKey": "VT/VWRA (全球股票)"},
+    {"Symbol": "SGOV",      "Name": "iShares短債",        "Type": "債券",   "Region": "美股", "Platform": "元大複委託(美股)", "Account": "USD外幣帳戶", "Currency": "USD", "Cost": 0.00,      "Shares": 0.0,        "GroupKey": "SGOV (美國短債)"},
+    {"Symbol": "TSLA",      "Name": "特斯拉(台)",         "Type": "股票",   "Region": "美股", "Platform": "元大複委託(美股)", "Account": "TWD帳戶",     "Currency": "USD", "Cost": 4244.50,   "Shares": 10.0,       "GroupKey": "TSLA (特斯拉)"},
+    {"Symbol": "GOOGL",     "Name": "字母公司(台)",       "Type": "股票",   "Region": "美股", "Platform": "元大複委託(美股)", "Account": "TWD帳戶",     "Currency": "USD", "Cost": 8040.35,   "Shares": 34.0,       "GroupKey": "Google (Alphabet)"},
+    {"Symbol": "TSLA",      "Name": "特斯拉",             "Type": "股票",   "Region": "美股", "Platform": "元大複委託(美股)", "Account": "USD外幣帳戶", "Currency": "USD", "Cost": 889.14,    "Shares": 3.0,        "GroupKey": "TSLA (特斯拉)"},
+    {"Symbol": "GOOGL",     "Name": "字母公司",           "Type": "股票",   "Region": "美股", "Platform": "元大複委託(美股)", "Account": "USD外幣帳戶", "Currency": "USD", "Cost": 580.25,    "Shares": 2.0,        "GroupKey": "Google (Alphabet)"},
+    
+    # 海外券商 (IBKR/Firstrade)
+    {"Symbol": "VWRA.L",    "Name": "VWRA全球股票",       "Type": "股票",   "Region": "全球", "Platform": "IBKR",            "Account": "USD外幣帳戶", "Currency": "USD", "Cost": 42564.20,  "Shares": 249.17,     "GroupKey": "VT/VWRA (全球股票)"},
+    {"Symbol": "IBKR",      "Name": "盈透證券",           "Type": "股票",   "Region": "美股", "Platform": "IBKR",            "Account": "USD外幣帳戶", "Currency": "USD", "Cost": 247.00,    "Shares": 3.84,       "GroupKey": "IBKR (盈透證券)"},
+    {"Symbol": "TSLA",      "Name": "特斯拉(FT)",         "Type": "股票",   "Region": "美股", "Platform": "Firstrade(FT)",    "Account": "USD外幣帳戶", "Currency": "USD", "Cost": 2468.00,   "Shares": 5.55,       "GroupKey": "TSLA (特斯拉)"},
+    {"Symbol": "GOOG",      "Name": "字母公司(FT)",       "Type": "股票",   "Region": "美股", "Platform": "Firstrade(FT)",    "Account": "USD外幣帳戶", "Currency": "USD", "Cost": 1438.00,   "Shares": 4.57,       "GroupKey": "Google (Alphabet)"},
+    {"Symbol": "VTI",       "Name": "美國大盤(FT)",       "Type": "股票",   "Region": "美股", "Platform": "Firstrade(FT)",    "Account": "USD外幣帳戶", "Currency": "USD", "Cost": 1224.00,   "Shares": 3.65,       "GroupKey": "VTI (美國大盤)"},
+    {"Symbol": "SGOV",      "Name": "短債現金(FT)",       "Type": "債券",   "Region": "美股", "Platform": "Firstrade(FT)",    "Account": "USD外幣帳戶", "Currency": "USD", "Cost": 1000.00,   "Shares": 9.95,       "GroupKey": "SGOV (美國短債)"},
+    
+    # 加密貨幣
+    {"Symbol": "BTC-USD",   "Name": "比特幣",             "Type": "虛擬幣", "Region": "加密", "Platform": "錢包",             "Account": "USD外幣帳戶", "Currency": "USD", "Cost": 0.00,      "Shares": 0.058469,   "GroupKey": "Bitcoin (比特幣)"},
 ]
 
-# ==========================================
-# 3. 驗證登入 (維持本地 config.yaml 讀取，最穩定)
-# ==========================================
-try:
-    with open('config.yaml', encoding='utf-8') as file:
-        config = yaml.load(file, Loader=SafeLoader)
+# 預設現金與貸款 (依照截圖 image_2231d3.png 更新)
+DEFAULT_SETTINGS = {
+    "Cash_TWD": 0,          
+    "Cash_USD": 3148.49,    
+    "Loan_TWD": 1529264,    
+}
 
-    authenticator = stauth.Authenticate(
-        config['credentials'],
-        config['cookie']['name'],
-        config['cookie']['key'],
-        config['cookie']['expiry_days']
-    )
-    authenticator.login()
-except Exception as e:
-    st.error(f"登入設定錯誤: {e}")
-    st.stop()
+# 檔案名稱設定
+DATA_FILE = "my_holdings_data.csv"
+SETTINGS_FILE = "my_settings.csv"
+HISTORY_FILE = "my_networth_history.csv"
 
-# ==========================================
-# 4. 主程式
-# ==========================================
-if st.session_state["authentication_status"]:
-    authenticator.logout('登出系統', 'sidebar')
+st.set_page_config(page_title="My Smart Dashboard", page_icon="💰", layout="wide")
+
+# ==========================================================
+# 1) 資料讀寫函數
+# ==========================================================
+def load_data():
+    # 讀取持倉
+    if os.path.exists(DATA_FILE):
+        df = pd.read_csv(DATA_FILE)
+    else:
+        df = pd.DataFrame(DEFAULT_HOLDINGS)
+        df.to_csv(DATA_FILE, index=False)
     
-    # 👇 改成從雲端讀取
-    fin_data = load_financials()
-    market_info = check_market_status()
+    # 讀取設定(現金/貸款)
+    if os.path.exists(SETTINGS_FILE):
+        settings = pd.read_csv(SETTINGS_FILE).iloc[0].to_dict()
+    else:
+        settings = DEFAULT_SETTINGS
+        pd.DataFrame([settings]).to_csv(SETTINGS_FILE, index=False)
 
-    # --- 側邊欄 ---
-    with st.sidebar:
-        st.header("🌍 市場戰情")
-        st.caption(f"TW 時間: {market_info['tw_str']}")
+    # 讀取歷史淨值
+    if os.path.exists(HISTORY_FILE):
+        history_df = pd.read_csv(HISTORY_FILE)
+    else:
+        history_df = pd.DataFrame(columns=["Date", "NetWorth"])
         
-        usd_rate = 32.5 
-        try:
-            usd_ticker = yf.Ticker("USDTWD=X")
-            info = usd_ticker.fast_info
-            if info and 'last_price' in info:
-                usd_rate = info['last_price']
-            st.metric("🇺🇸 美金匯率", f"{usd_rate:.2f}")
-        except:
-            st.warning("匯率同步失敗，使用預設值")
+    return df, settings, history_df
 
-        st.divider()
-        st.markdown(f"**🇺🇸 美股**: {market_info['us_status']} ({market_info['us_time_str']})")
-        st.markdown(f"**🇬🇧 英股**: {market_info['uk_status']} ({market_info['uk_time_str']})")
+def save_data(df, settings_dict):
+    df.to_csv(DATA_FILE, index=False)
+    pd.DataFrame([settings_dict]).to_csv(SETTINGS_FILE, index=False)
+    st.toast("✅ 持倉與設定已更新！")
 
-    st.title(f"📊 {st.session_state['name']} 的雲端戰情室")
+def save_history(net_worth):
+    date_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+    new_record = pd.DataFrame([{"Date": date_str, "NetWorth": int(net_worth)}])
+    
+    if os.path.exists(HISTORY_FILE):
+        new_record.to_csv(HISTORY_FILE, mode='a', header=False, index=False)
+    else:
+        new_record.to_csv(HISTORY_FILE, index=False)
+    st.toast(f"✅ 已紀錄今日淨值：${int(net_worth):,}")
 
-    # --- 財務設定 (同步雲端) ---
-    with st.expander("💰 現金與貸款設定 (雲端同步)", expanded=False):
-        with st.form("financial_form"):
-            c1, c2, c3, c4 = st.columns(4)
-            # 使用 fin_data.get 安全獲取資料
-            in_loan = c1.number_input("目前貸款 (TWD)", value=float(fin_data.get('loan', 0.0)), step=10000.0)
-            in_cash_acc = c2.number_input("帳戶現金 (TWD)", value=float(fin_data.get('cash_account', 0.0)), step=1000.0)
-            in_cash_set = c3.number_input("交割中現金 (TWD)", value=float(fin_data.get('cash_settlement', 0.0)), step=1000.0)
-            in_cash_usd = c4.number_input("美元現金 (USD)", value=float(fin_data.get('cash_usd', 0.0)), step=10.0)
-            
-            if st.form_submit_button("💾 更新財務數據"):
-                # 👇 改成寫入雲端
-                save_financials({"loan": in_loan, "cash_account": in_cash_acc, "cash_settlement": in_cash_set, "cash_usd": in_cash_usd})
-                st.success("✅ 雲端數據已更新！")
-                st.rerun()
-
-    # --- 計算邏輯：初始資產 + 雲端交易紀錄 ---
-    portfolio = {} 
-    for item in INITIAL_ASSETS:
-        code = item['code']
-        if code not in portfolio:
-            asset_type = item.get('type', '股票')
-            portfolio[code] = {'qty': 0.0, 'total_cost': 0.0, 'currency': item['currency'], 'type': asset_type}
-        portfolio[code]['qty'] += item['qty']
-        portfolio[code]['total_cost'] += item['cost'] * item['qty']
-
-    # 👇 從 Google Sheets 讀取 trades_2026 分頁
+# ==========================================================
+# 2) 抓取股價
+# ==========================================================
+@st.cache_data(ttl=300)
+def fetch_live_prices(symbols):
+    # 去除重複並加入匯率
+    symbols_to_fetch = list(set(symbols)) + ["TWD=X"]
+    
     try:
-        df_trades = conn.read(worksheet="trades_2026", ttl=0)
+        tickers = yf.Tickers(" ".join(symbols_to_fetch))
+        usd_twd_rate = tickers.tickers["TWD=X"].history(period="1d")['Close'].iloc[-1]
     except:
-        df_trades = pd.DataFrame()
-
-    if not df_trades.empty:
-        # 資料清洗與型別轉換
-        df_trades["代號"] = df_trades["代號"].astype(str).apply(lambda x: x + ".TW" if x.isdigit() and len(x) == 4 else x.upper())
-        df_trades["股數"] = pd.to_numeric(df_trades["股數"], errors='coerce').fillna(0)
-        df_trades["價格"] = pd.to_numeric(df_trades["價格"], errors='coerce').fillna(0)
-        
-        for index, row in df_trades.iterrows():
-            t_code = row['代號']
-            t_action = row['動作']
-            t_qty = row['股數']
-            t_price = row['價格']
-            
-            if t_code not in portfolio:
-                portfolio[t_code] = {'qty': 0.0, 'total_cost': 0.0, 'currency': 'TWD', 'type': '新倉'}
-
-            if portfolio[t_code]['qty'] > 0:
-                current_avg_cost = portfolio[t_code]['total_cost'] / portfolio[t_code]['qty']
-            else:
-                current_avg_cost = 0
-
-            if t_action == '買入':
-                portfolio[t_code]['qty'] += t_qty
-                portfolio[t_code]['total_cost'] += t_price * t_qty
-            elif t_action == '賣出':
-                if portfolio[t_code]['qty'] > 0:
-                    cost_to_remove = current_avg_cost * t_qty
-                    portfolio[t_code]['qty'] -= t_qty
-                    portfolio[t_code]['total_cost'] -= cost_to_remove
-
-    total_stock_value_twd = 0
-    display_rows = []
-    chart_data = []
-
-    active_assets = [(k, v) for k, v in portfolio.items() if v['qty'] > 0.0001]
+        usd_twd_rate = 32.50 # 備用匯率
     
-    for code, data in active_assets:
-        qty = data['qty']
-        avg_cost = data['total_cost'] / qty if qty > 0 else 0
-        currency = data['currency']
-        
+    prices = {}
+    for sym in symbols:
         try:
-            ticker = yf.Ticker(code)
-            current_price = ticker.fast_info['last_price']
+            p = tickers.tickers[sym].history(period="1d")['Close'].iloc[-1]
+            prices[sym] = p
         except:
-            current_price = avg_cost 
-        
-        rate = usd_rate if currency == "USD" else 1
-        market_value_twd = qty * current_price * rate
-        profit_twd = (current_price - avg_cost) * qty * rate
-        roi = ((current_price - avg_cost) / avg_cost) * 100 if avg_cost > 0 else 0
-
-        total_stock_value_twd += market_value_twd
-
-        display_rows.append({
-            "代號": code,
-            "持股數": qty,
-            "幣別": currency,
-            "平均成本": avg_cost,
-            "現價": current_price,
-            "市值 (TWD)": market_value_twd,
-            "未實現損益 (TWD)": profit_twd,
-            "報酬率 %": roi
-        })
-
-        chart_data.append({
-            "Asset": code,
-            "Value": market_value_twd,
-            "Type": data['type'],
-            "Currency": currency
-        })
-
-    # 取得雲端財務數據
-    fin_loan = float(fin_data.get('loan', 0.0))
-    fin_cash_acc = float(fin_data.get('cash_account', 0.0))
-    fin_cash_set = float(fin_data.get('cash_settlement', 0.0))
-    fin_cash_usd = float(fin_data.get('cash_usd', 0.0))
-    fin_cash_usd_twd = fin_cash_usd * usd_rate
-    total_cash_twd = fin_cash_acc + fin_cash_set + fin_cash_usd_twd
-
-    total_net_worth = (total_stock_value_twd + total_cash_twd) - fin_loan
-
-    # --- 儀表板 ---
-    st.divider()
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("💰 總淨資產", f"${total_net_worth:,.0f}")
-    m2.metric("📉 總負債", f"${fin_loan:,.0f}", delta_color="inverse")
-    m3.metric("💵 總現金", f"${total_cash_twd:,.0f}")
-    m4.metric("📈 股票市值", f"${total_stock_value_twd:,.0f}")
-
-    # --- 視覺化圖表 ---
-    st.divider()
-    st.subheader("🎨 資產視覺化分析")
-    
-    if total_cash_twd > 0:
-        chart_data.append({"Asset": "現金", "Value": total_cash_twd, "Type": "現金", "Currency": "TWD"})
-    
-    df_chart = pd.DataFrame(chart_data)
-
-    if not df_chart.empty:
-        c1, c2 = st.columns(2)
-        with c1:
-            st.markdown("##### 🍰 資產配置 (依類別)")
-            fig_pie = px.pie(df_chart, values='Value', names='Type', hole=0.4)
-            st.plotly_chart(fig_pie, use_container_width=True)
+            prices[sym] = 0.0
             
-        with c2:
-            st.markdown("##### 🗺️ 持股權重 (依市值)")
-            df_invest = df_chart[df_chart['Type'] != '現金']
-            if not df_invest.empty:
-                fig_tree = px.treemap(df_invest, path=['Type', 'Asset'], values='Value',
-                                    color='Value', color_continuous_scale='RdBu')
-                st.plotly_chart(fig_tree, use_container_width=True)
+    return prices, usd_twd_rate
 
-    # --- 表格 ---
-    st.divider()
-    st.subheader("📊 資產庫存明細")
-    df_display = pd.DataFrame(display_rows)
-    if not df_display.empty:
-        st.dataframe(
-            df_display,
+# ==========================================================
+# 3) Excel 生成邏輯
+# ==========================================================
+def generate_excel(df, settings, prices, usd_rate, net_worth):
+    output = BytesIO()
+    workbook = xlsxwriter.Workbook(output, {"strings_to_formulas": False})
+    
+    # 樣式
+    header_fmt = workbook.add_format({"bold": True, "align": "center", "bg_color": "#1F4E78", "font_color": "white", "border": 1})
+    input_fmt = workbook.add_format({"align": "center", "bg_color": "#FFF2CC", "border": 1})
+    price_fmt = workbook.add_format({"num_format": "#,##0.00", "align": "center", "bg_color": "#E2EFDA", "font_color": "#375623", "bold": True, "border": 1})
+    calc_fmt = workbook.add_format({"num_format": "#,##0", "bg_color": "#F2F2F2", "border": 1})
+    networth_fmt = workbook.add_format({"num_format": "#,##0", "bold": True, "font_size": 16, "align": "center", "border": 2, "bg_color": "#E2EFDA"})
+
+    ws = workbook.add_worksheet("資產戰情室")
+    ws.set_column("A:A", 20); ws.set_column("B:C", 15)
+
+    ws.write("A1", "美元匯率", header_fmt); ws.write("A2", usd_rate, input_fmt)
+    ws.write("C1", "現金(TWD)", header_fmt); ws.write("C2", settings["Cash_TWD"], input_fmt)
+    ws.write("E1", "現金(USD)", header_fmt); ws.write("E2", settings["Cash_USD"], input_fmt)
+    ws.write("G1", "貸款", header_fmt); ws.write("G2", settings["Loan_TWD"], input_fmt)
+    ws.write("K1", "資產總淨值", header_fmt); ws.write("K2", net_worth, networth_fmt)
+
+    cols = ["Symbol", "Name", "Type", "Region", "Platform", "Shares", "Cost", "Price", "MarketValue(TWD)"]
+    for c, h in enumerate(cols):
+        ws.write(4, c, h, header_fmt)
+
+    r = 5
+    for idx, row in df.iterrows():
+        sym = row["Symbol"]
+        shares = row["Shares"]
+        price = prices.get(sym, 0)
+        
+        if row["Currency"] == "USD":
+            mv_twd = price * shares * usd_rate
+        else:
+            mv_twd = price * shares
+
+        ws.write(r, 0, sym, input_fmt)
+        ws.write(r, 1, row["Name"], input_fmt)
+        ws.write(r, 2, row["Type"], input_fmt)
+        ws.write(r, 3, row["Region"], input_fmt)
+        ws.write(r, 4, row["Platform"], input_fmt)
+        ws.write(r, 5, shares, calc_fmt)
+        ws.write(r, 6, row["Cost"], calc_fmt)
+        ws.write(r, 7, price, price_fmt)
+        ws.write(r, 8, mv_twd, calc_fmt)
+        r += 1
+
+    workbook.close()
+    return output.getvalue()
+
+# ==========================================================
+# 4) 主程式 UI
+# ==========================================================
+def main():
+    st.title("💰 Zhang's Smart Dashboard V7.1")
+    
+    # 1. 載入資料
+    df, settings, history_df = load_data()
+
+    # 2. 側邊欄：設定
+    with st.sidebar:
+        st.header("⚙️ 帳戶設定")
+        new_cash_twd = st.number_input("TWD 現金總額", value=int(settings["Cash_TWD"]), step=1000)
+        new_cash_usd = st.number_input("USD 現金總額", value=float(settings["Cash_USD"]), step=100.0)
+        new_loan = st.number_input("目前貸款金額", value=int(settings["Loan_TWD"]), step=10000)
+        
+        if st.button("更新設定"):
+            settings["Cash_TWD"] = new_cash_twd
+            settings["Cash_USD"] = new_cash_usd
+            settings["Loan_TWD"] = new_loan
+            save_data(df, settings)
+            st.rerun()
+
+    # 3. 抓取股價
+    symbols_list = df["Symbol"].tolist()
+    with st.spinner('連線報價中...'):
+        live_prices, usd_rate = fetch_live_prices(symbols_list)
+
+    # 4. 計算市值
+    def calc_mv_twd(row):
+        p = live_prices.get(row["Symbol"], 0)
+        if row["Currency"] == "USD":
+            return p * row["Shares"] * usd_rate
+        else:
+            return p * row["Shares"]
+
+    df["Price"] = df["Symbol"].map(live_prices).fillna(0)
+    df["MarketValueTWD"] = df.apply(calc_mv_twd, axis=1)
+
+    total_stock_val = df["MarketValueTWD"].sum()
+    total_cash_val = settings["Cash_TWD"] + (settings["Cash_USD"] * usd_rate)
+    net_worth = total_cash_val + total_stock_val - settings["Loan_TWD"]
+
+    # --- 頂部按鈕區 ---
+    col_btn1, col_btn2 = st.columns([1, 5])
+    with col_btn1:
+        if st.button("📝 紀錄今日淨值"):
+            save_history(net_worth)
+            st.rerun()
+
+    # --- 分頁 ---
+    tab1, tab2, tab3 = st.tabs(["📊 資產戰情室 (含圖表)", "📝 資料管理", "📥 報表下載"])
+
+    # === Tab 1: 戰情室 ===
+    with tab1:
+        # 1. 關鍵數字
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("資產總淨值 (TWD)", f"${net_worth:,.0f}", delta=None)
+        c2.metric("證券總市值", f"${total_stock_val:,.0f}")
+        c3.metric("貸款餘額", f"${settings['Loan_TWD']:,.0f}", delta_color="inverse")
+        c4.metric("美元匯率", f"{usd_rate:.2f}")
+
+        st.markdown("---")
+        
+        # 2. 歷史折線圖
+        if not history_df.empty:
+            st.subheader("📈 資產總淨值歷史折線圖")
+            fig_line = px.line(history_df, x="Date", y="NetWorth", markers=True)
+            fig_line.update_layout(yaxis_title="TWD", xaxis_title="時間")
+            st.plotly_chart(fig_line, use_container_width=True)
+        else:
+            st.info("尚無歷史紀錄，請點擊上方「紀錄今日淨值」按鈕開始紀錄。")
+
+        st.markdown("---")
+
+        # 3. 矩形樹狀圖 (Treemap)
+        # 建立分類欄位
+        def get_chart_group(row):
+            if row['Region'] == '台股' and row['Type'] == '股票': return '台股'
+            if row['Region'] == '台股' and row['Type'] == '債券': return '債券' 
+            if row['Region'] == '全球': return '全球ETF'
+            if row['Region'] == '美股' and row['Type'] == '股票': return '美股'
+            if row['Region'] == '美股' and row['Type'] == '債券': return '美債'
+            if row['Region'] == '加密': return '加密貨幣'
+            return '其他'
+        
+        df['ChartGroup'] = df.apply(get_chart_group, axis=1)
+
+        st.subheader("🗺️ 持股權重 (依市值)")
+        fig_tree = px.treemap(
+            df,
+            path=['ChartGroup', 'Symbol'],
+            values='MarketValueTWD',
+            color='MarketValueTWD',
+            color_continuous_scale='RdBu',
+            hover_data=['Name', 'Price'],
+        )
+        st.plotly_chart(fig_tree, use_container_width=True)
+
+        # 4. 圓餅圖 (地區 & 資產)
+        col_pie1, col_pie2 = st.columns(2)
+        with col_pie1:
+            st.subheader("🌍 投資地區分佈")
+            fig_region = px.pie(df, values='MarketValueTWD', names='Region', hole=0.0)
+            st.plotly_chart(fig_region, use_container_width=True)
+
+        with col_pie2:
+            st.subheader("📊 持倉佔比 (合併後)")
+            fig_group = px.pie(df, values='MarketValueTWD', names='GroupKey', hole=0.4)
+            st.plotly_chart(fig_group, use_container_width=True)
+
+    # === Tab 2: 資料管理 ===
+    with tab2:
+        st.info("💡 在這裡修改股數或成本，記得按下方「儲存修改」")
+        
+        edit_cols = ["Symbol", "Name", "Type", "Region", "Platform", "Account", "Currency", "Cost", "Shares", "GroupKey"]
+        
+        edited_df = st.data_editor(
+            df[edit_cols], 
+            num_rows="dynamic",
             use_container_width=True,
+            height=600,
             column_config={
-                "平均成本": st.column_config.NumberColumn(format="%.2f"),
-                "現價": st.column_config.NumberColumn(format="%.2f"),
-                "市值 (TWD)": st.column_config.ProgressColumn(format="$%d", min_value=0, max_value=max(df_display["市值 (TWD)"])),
-                "未實現損益 (TWD)": st.column_config.NumberColumn(format="$%d"),
-                "報酬率 %": st.column_config.NumberColumn(format="%.2f %%")
-            },
-            hide_index=True
+                "Cost": st.column_config.NumberColumn("總成本", format="$%d"),
+                "Shares": st.column_config.NumberColumn("股數", format="%.4f"),
+            }
         )
 
-    # --- 新增交易紀錄 (同步雲端) ---
-    with st.expander("➕ 新增交易紀錄 (雲端同步)"):
-        with st.form("trade_form", clear_on_submit=True):
-            c1, c2, c3, c4 = st.columns(4)
-            t_date = c1.date_input("日期", value=datetime.now())
-            t_code = c2.text_input("股票代號", placeholder="006208")
-            t_action = c3.selectbox("動作", ["買入", "賣出"])
-            t_price = c4.number_input("成交價格", min_value=0.0, step=0.01, value=None)
-            t_qty = st.number_input("成交股數", min_value=0.0, step=0.001, value=None)
-            
-            if st.form_submit_button("儲存至雲端"):
-                if t_code and t_price and t_qty:
-                    final_code = t_code + ".TW" if t_code.isdigit() and len(t_code) == 4 else t_code.upper()
-                    
-                    # 準備新資料
-                    new_row = pd.DataFrame([{
-                        "日期": t_date.strftime("%Y-%m-%d"), 
-                        "代號": final_code, 
-                        "動作": t_action, 
-                        "價格": t_price, 
-                        "股數": t_qty, 
-                        "建立時間": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    }])
-                    
-                    try:
-                        # 先讀取舊資料，再合併新資料
-                        updated_df = pd.concat([df_trades, new_row], ignore_index=True)
-                        # 寫入 Google Sheets
-                        conn.update(worksheet="trades_2026", data=updated_df)
-                        st.success(f"✅ 已將 {final_code} 寫入雲端！")
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"雲端寫入失敗: {e}")
+        if st.button("💾 儲存修改 (Sync)"):
+            save_data(edited_df, settings)
+            st.success("資料已更新！")
+            st.rerun()
 
-    # --- 歷史交易檢視 ---
-    if not df_trades.empty:
-        with st.expander("📋 雲端歷史交易紀錄"):
-            # 顯示最近的交易在最上面
-            st.dataframe(df_trades.iloc[::-1], use_container_width=True, hide_index=True)
+    # === Tab 3: 下載 ===
+    with tab3:
+        st.subheader("匯出 Excel")
+        excel_data = generate_excel(df, settings, live_prices, usd_rate, net_worth)
+        st.download_button(
+            label="下載 Excel (V7.1_Live)",
+            data=excel_data,
+            file_name=f"Smart_Dashboard_{datetime.now().strftime('%Y%m%d')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
 
-elif st.session_state["authentication_status"] is False:
-    st.error('帳號或密碼錯誤')
-elif st.session_state["authentication_status"] is None:
-    st.warning('請輸入帳號密碼進入系統')
+if __name__ == "__main__":
+    main()
