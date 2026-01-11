@@ -4,13 +4,13 @@ import yaml
 from yaml.loader import SafeLoader
 import yfinance as yf
 import pandas as pd
-import os
+from streamlit_gsheets import GSheetsConnection  # 👈 新增這個：Google Sheets 連線工具
 from datetime import datetime
 import pytz
-import plotly.express as px # 新增繪圖工具
+import plotly.express as px
 
 # ==========================================
-# 0. 基礎設定
+# 0. 基礎設定與雲端連線
 # ==========================================
 st.set_page_config(
     page_title="投資戰情室", 
@@ -18,33 +18,38 @@ st.set_page_config(
     menu_items={'About': "# 這是您的私人資產戰情室"}
 )
 
-DATA_FILE = "data/trades.csv"
-FINANCE_FILE = "data/financials.csv"
-
-if not os.path.exists("data"):
-    os.makedirs("data")
+# 👇 建立 Google Sheets 連線 (這是最關鍵的一行)
+conn = st.connection("gsheets", type=GSheetsConnection)
 
 DEFAULT_FINANCIALS = {"loan": 0.0, "cash_account": 0.0, "cash_settlement": 0.0, "cash_usd": 0.0}
 
 # ==========================================
-# 1. 工具函式
+# 1. 工具函式 (已雲端化)
 # ==========================================
 def load_financials():
-    if os.path.exists(FINANCE_FILE):
-        try:
-            df = pd.read_csv(FINANCE_FILE)
-            return df.set_index('category')['amount'].to_dict()
-        except:
+    """從 Google Sheets 讀取財務數據"""
+    try:
+        # 讀取 financials 分頁，ttl=0 代表不快取，每次都抓最新的
+        df = conn.read(worksheet="financials", ttl=0)
+        if df.empty:
             return DEFAULT_FINANCIALS
-    return DEFAULT_FINANCIALS
+        # 轉換成字典格式
+        return df.set_index('category')['amount'].to_dict()
+    except Exception:
+        return DEFAULT_FINANCIALS
 
 def save_financials(data_dict):
+    """將財務數據寫回 Google Sheets"""
+    # 轉成 DataFrame
     df = pd.DataFrame(list(data_dict.items()), columns=['category', 'amount'])
-    df.to_csv(FINANCE_FILE, index=False)
+    try:
+        # 更新 financials 分頁
+        conn.update(worksheet="financials", data=df)
+    except Exception as e:
+        st.error(f"寫入失敗: {e}")
 
 def check_market_status():
     utc_now = datetime.now(pytz.utc)
-    # 定義時區
     tw_tz = pytz.timezone('Asia/Taipei')
     us_tz = pytz.timezone('US/Eastern')
     uk_tz = pytz.timezone('Europe/London')
@@ -70,7 +75,7 @@ def check_market_status():
     }
 
 # ==========================================
-# 2. 初始資產
+# 2. 初始資產 (這部分維持不變)
 # ==========================================
 INITIAL_ASSETS = [
     {"code": "0050.TW", "cost": 52.28, "qty": 30000, "currency": "TWD", "type": "台股"},
@@ -95,24 +100,30 @@ INITIAL_ASSETS = [
 ]
 
 # ==========================================
-# 3. 驗證登入
+# 3. 驗證登入 (維持本地 config.yaml 讀取，最穩定)
 # ==========================================
-with open('config.yaml', encoding='utf-8') as file:
-    config = yaml.load(file, Loader=SafeLoader)
+try:
+    with open('config.yaml', encoding='utf-8') as file:
+        config = yaml.load(file, Loader=SafeLoader)
 
-authenticator = stauth.Authenticate(
-    config['credentials'],
-    config['cookie']['name'],
-    config['cookie']['key'],
-    config['cookie']['expiry_days']
-)
-authenticator.login()
+    authenticator = stauth.Authenticate(
+        config['credentials'],
+        config['cookie']['name'],
+        config['cookie']['key'],
+        config['cookie']['expiry_days']
+    )
+    authenticator.login()
+except Exception as e:
+    st.error(f"登入設定錯誤: {e}")
+    st.stop()
 
 # ==========================================
 # 4. 主程式
 # ==========================================
 if st.session_state["authentication_status"]:
     authenticator.logout('登出系統', 'sidebar')
+    
+    # 👇 改成從雲端讀取
     fin_data = load_financials()
     market_info = check_market_status()
 
@@ -124,76 +135,82 @@ if st.session_state["authentication_status"]:
         usd_rate = 32.5 
         try:
             usd_ticker = yf.Ticker("USDTWD=X")
-            usd_rate = usd_ticker.fast_info['last_price']
+            info = usd_ticker.fast_info
+            if info and 'last_price' in info:
+                usd_rate = info['last_price']
             st.metric("🇺🇸 美金匯率", f"{usd_rate:.2f}")
         except:
-            st.warning("匯率連線失敗")
+            st.warning("匯率同步失敗，使用預設值")
 
         st.divider()
         st.markdown(f"**🇺🇸 美股**: {market_info['us_status']} ({market_info['us_time_str']})")
         st.markdown(f"**🇬🇧 英股**: {market_info['uk_status']} ({market_info['uk_time_str']})")
 
-    st.title(f"📊 {st.session_state['name']} 的資產總管")
+    st.title(f"📊 {st.session_state['name']} 的雲端戰情室")
 
-    # --- 財務設定 ---
-    with st.expander("💰 現金與貸款設定", expanded=False):
+    # --- 財務設定 (同步雲端) ---
+    with st.expander("💰 現金與貸款設定 (雲端同步)", expanded=False):
         with st.form("financial_form"):
             c1, c2, c3, c4 = st.columns(4)
-            in_loan = c1.number_input("目前貸款 (TWD)", value=fin_data.get('loan', 0.0), step=10000.0)
-            in_cash_acc = c2.number_input("帳戶現金 (TWD)", value=fin_data.get('cash_account', 0.0), step=1000.0)
-            in_cash_set = c3.number_input("交割中現金 (TWD)", value=fin_data.get('cash_settlement', 0.0), step=1000.0)
-            in_cash_usd = c4.number_input("美元現金 (USD)", value=fin_data.get('cash_usd', 0.0), step=10.0)
+            # 使用 fin_data.get 安全獲取資料
+            in_loan = c1.number_input("目前貸款 (TWD)", value=float(fin_data.get('loan', 0.0)), step=10000.0)
+            in_cash_acc = c2.number_input("帳戶現金 (TWD)", value=float(fin_data.get('cash_account', 0.0)), step=1000.0)
+            in_cash_set = c3.number_input("交割中現金 (TWD)", value=float(fin_data.get('cash_settlement', 0.0)), step=1000.0)
+            in_cash_usd = c4.number_input("美元現金 (USD)", value=float(fin_data.get('cash_usd', 0.0)), step=10.0)
             
             if st.form_submit_button("💾 更新財務數據"):
+                # 👇 改成寫入雲端
                 save_financials({"loan": in_loan, "cash_account": in_cash_acc, "cash_settlement": in_cash_set, "cash_usd": in_cash_usd})
-                st.success("更新成功")
+                st.success("✅ 雲端數據已更新！")
                 st.rerun()
 
-    # --- 計算邏輯 ---
+    # --- 計算邏輯：初始資產 + 雲端交易紀錄 ---
     portfolio = {} 
     for item in INITIAL_ASSETS:
         code = item['code']
         if code not in portfolio:
-            # 預設類別邏輯 (如果初始資料沒寫 type，簡單判斷一下)
             asset_type = item.get('type', '股票')
             portfolio[code] = {'qty': 0.0, 'total_cost': 0.0, 'currency': item['currency'], 'type': asset_type}
         portfolio[code]['qty'] += item['qty']
         portfolio[code]['total_cost'] += item['cost'] * item['qty']
 
-    if os.path.exists(DATA_FILE):
-        df_trades = pd.read_csv(DATA_FILE)
-        if not df_trades.empty:
-            df_trades["代號"] = df_trades["代號"].astype(str).apply(lambda x: x + ".TW" if x.isdigit() and len(x) == 4 else x.upper())
-            df_trades["股數"] = pd.to_numeric(df_trades["股數"])
-            df_trades["價格"] = pd.to_numeric(df_trades["價格"])
+    # 👇 從 Google Sheets 讀取 trades_2026 分頁
+    try:
+        df_trades = conn.read(worksheet="trades_2026", ttl=0)
+    except:
+        df_trades = pd.DataFrame()
+
+    if not df_trades.empty:
+        # 資料清洗與型別轉換
+        df_trades["代號"] = df_trades["代號"].astype(str).apply(lambda x: x + ".TW" if x.isdigit() and len(x) == 4 else x.upper())
+        df_trades["股數"] = pd.to_numeric(df_trades["股數"], errors='coerce').fillna(0)
+        df_trades["價格"] = pd.to_numeric(df_trades["價格"], errors='coerce').fillna(0)
+        
+        for index, row in df_trades.iterrows():
+            t_code = row['代號']
+            t_action = row['動作']
+            t_qty = row['股數']
+            t_price = row['價格']
             
-            for index, row in df_trades.iterrows():
-                t_code = row['代號']
-                t_action = row['動作']
-                t_qty = row['股數']
-                t_price = row['價格']
-                
-                if t_code not in portfolio:
-                    portfolio[t_code] = {'qty': 0.0, 'total_cost': 0.0, 'currency': 'TWD', 'type': '新倉'}
+            if t_code not in portfolio:
+                portfolio[t_code] = {'qty': 0.0, 'total_cost': 0.0, 'currency': 'TWD', 'type': '新倉'}
 
+            if portfolio[t_code]['qty'] > 0:
+                current_avg_cost = portfolio[t_code]['total_cost'] / portfolio[t_code]['qty']
+            else:
+                current_avg_cost = 0
+
+            if t_action == '買入':
+                portfolio[t_code]['qty'] += t_qty
+                portfolio[t_code]['total_cost'] += t_price * t_qty
+            elif t_action == '賣出':
                 if portfolio[t_code]['qty'] > 0:
-                    current_avg_cost = portfolio[t_code]['total_cost'] / portfolio[t_code]['qty']
-                else:
-                    current_avg_cost = 0
-
-                if t_action == '買入':
-                    portfolio[t_code]['qty'] += t_qty
-                    portfolio[t_code]['total_cost'] += t_price * t_qty
-                elif t_action == '賣出':
-                    if portfolio[t_code]['qty'] > 0:
-                        cost_to_remove = current_avg_cost * t_qty
-                        portfolio[t_code]['qty'] -= t_qty
-                        portfolio[t_code]['total_cost'] -= cost_to_remove
+                    cost_to_remove = current_avg_cost * t_qty
+                    portfolio[t_code]['qty'] -= t_qty
+                    portfolio[t_code]['total_cost'] -= cost_to_remove
 
     total_stock_value_twd = 0
     display_rows = []
-    
-    # 用來畫圖的資料
     chart_data = []
 
     active_assets = [(k, v) for k, v in portfolio.items() if v['qty'] > 0.0001]
@@ -227,18 +244,18 @@ if st.session_state["authentication_status"]:
             "報酬率 %": roi
         })
 
-        # 收集畫圖資料
         chart_data.append({
             "Asset": code,
             "Value": market_value_twd,
-            "Type": data['type'], # 使用資產類別
+            "Type": data['type'],
             "Currency": currency
         })
 
-    fin_loan = fin_data.get('loan', 0.0)
-    fin_cash_acc = fin_data.get('cash_account', 0.0)
-    fin_cash_set = fin_data.get('cash_settlement', 0.0)
-    fin_cash_usd = fin_data.get('cash_usd', 0.0)
+    # 取得雲端財務數據
+    fin_loan = float(fin_data.get('loan', 0.0))
+    fin_cash_acc = float(fin_data.get('cash_account', 0.0))
+    fin_cash_set = float(fin_data.get('cash_settlement', 0.0))
+    fin_cash_usd = float(fin_data.get('cash_usd', 0.0))
     fin_cash_usd_twd = fin_cash_usd * usd_rate
     total_cash_twd = fin_cash_acc + fin_cash_set + fin_cash_usd_twd
 
@@ -252,11 +269,10 @@ if st.session_state["authentication_status"]:
     m3.metric("💵 總現金", f"${total_cash_twd:,.0f}")
     m4.metric("📈 股票市值", f"${total_stock_value_twd:,.0f}")
 
-    # --- ★★★ 視覺化圖表區 (Visuals) ★★★ ---
+    # --- 視覺化圖表 ---
     st.divider()
     st.subheader("🎨 資產視覺化分析")
     
-    # 準備資料：加上現金部位，讓圓餅圖更完整
     if total_cash_twd > 0:
         chart_data.append({"Asset": "現金", "Value": total_cash_twd, "Type": "現金", "Currency": "TWD"})
     
@@ -264,23 +280,20 @@ if st.session_state["authentication_status"]:
 
     if not df_chart.empty:
         c1, c2 = st.columns(2)
-        
         with c1:
             st.markdown("##### 🍰 資產配置 (依類別)")
-            # 圓餅圖：顯示 台股/美股/債券/現金 的比例
             fig_pie = px.pie(df_chart, values='Value', names='Type', hole=0.4)
             st.plotly_chart(fig_pie, use_container_width=True)
             
         with c2:
             st.markdown("##### 🗺️ 持股權重 (依市值)")
-            # 樹狀圖：顯示每一支股票的大小塊，股票越大塊代表錢越多
-            # 過濾掉現金，只看投資部位
             df_invest = df_chart[df_chart['Type'] != '現金']
-            fig_tree = px.treemap(df_invest, path=['Type', 'Asset'], values='Value',
-                                  color='Value', color_continuous_scale='RdBu')
-            st.plotly_chart(fig_tree, use_container_width=True)
+            if not df_invest.empty:
+                fig_tree = px.treemap(df_invest, path=['Type', 'Asset'], values='Value',
+                                    color='Value', color_continuous_scale='RdBu')
+                st.plotly_chart(fig_tree, use_container_width=True)
 
-    # --- 表格與記帳 ---
+    # --- 表格 ---
     st.divider()
     st.subheader("📊 資產庫存明細")
     df_display = pd.DataFrame(display_rows)
@@ -298,7 +311,8 @@ if st.session_state["authentication_status"]:
             hide_index=True
         )
 
-    with st.expander("➕ 新增交易紀錄"):
+    # --- 新增交易紀錄 (同步雲端) ---
+    with st.expander("➕ 新增交易紀錄 (雲端同步)"):
         with st.form("trade_form", clear_on_submit=True):
             c1, c2, c3, c4 = st.columns(4)
             t_date = c1.date_input("日期", value=datetime.now())
@@ -307,26 +321,35 @@ if st.session_state["authentication_status"]:
             t_price = c4.number_input("成交價格", min_value=0.0, step=0.01, value=None)
             t_qty = st.number_input("成交股數", min_value=0.0, step=0.001, value=None)
             
-            if st.form_submit_button("儲存"):
+            if st.form_submit_button("儲存至雲端"):
                 if t_code and t_price and t_qty:
                     final_code = t_code + ".TW" if t_code.isdigit() and len(t_code) == 4 else t_code.upper()
-                    new_data = pd.DataFrame([{"日期": t_date, "代號": final_code, "動作": t_action, "價格": t_price, "股數": t_qty, "建立時間": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}])
-                    mode = 'a' if os.path.isfile(DATA_FILE) else 'w'
-                    header = not os.path.isfile(DATA_FILE)
-                    new_data.to_csv(DATA_FILE, mode=mode, header=header, index=False, encoding='utf-8-sig')
-                    st.success(f"✅ 已記錄 {final_code}")
-                    st.rerun()
+                    
+                    # 準備新資料
+                    new_row = pd.DataFrame([{
+                        "日期": t_date.strftime("%Y-%m-%d"), 
+                        "代號": final_code, 
+                        "動作": t_action, 
+                        "價格": t_price, 
+                        "股數": t_qty, 
+                        "建立時間": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    }])
+                    
+                    try:
+                        # 先讀取舊資料，再合併新資料
+                        updated_df = pd.concat([df_trades, new_row], ignore_index=True)
+                        # 寫入 Google Sheets
+                        conn.update(worksheet="trades_2026", data=updated_df)
+                        st.success(f"✅ 已將 {final_code} 寫入雲端！")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"雲端寫入失敗: {e}")
 
-    if os.path.exists(DATA_FILE):
-        with st.expander("📋 歷史交易 (可編輯)"):
-            df_hist = pd.read_csv(DATA_FILE)
-            if not df_hist.empty:
-                df_hist["代號"] = df_hist["代號"].astype(str)
-                df_hist["日期"] = pd.to_datetime(df_hist["日期"]).dt.date
-                edited_df = st.data_editor(df_hist, num_rows="dynamic", use_container_width=True, key="history")
-                if st.button("💾 儲存歷史"):
-                    edited_df.to_csv(DATA_FILE, index=False, encoding='utf-8-sig')
-                    st.rerun()
+    # --- 歷史交易檢視 ---
+    if not df_trades.empty:
+        with st.expander("📋 雲端歷史交易紀錄"):
+            # 顯示最近的交易在最上面
+            st.dataframe(df_trades.iloc[::-1], use_container_width=True, hide_index=True)
 
 elif st.session_state["authentication_status"] is False:
     st.error('帳號或密碼錯誤')
