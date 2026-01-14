@@ -179,3 +179,5 @@ cython_debug/
 #  refer to https://docs.cursor.com/context/ignore-files
 .cursorignore
 .cursorindexingignore
+# Streamlit secrets (包含 Google 金鑰與登入密碼)
+.streamlit/
