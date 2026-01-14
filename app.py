@@ -253,7 +253,7 @@ def main():
             d_shares = c4.number_input("成交股數", min_value=0.0, step=0.001, format="%.3f")
             
             k1, k2 = st.columns(2)
-            d_manual_principal = k1.number_input("實際成交總金額/價金 (0=自算)", min_value=0.0, format="%.3f")
+            d_manual_principal = k1.number_input("實際成交總金額/價金", min_value=0.0, format="%.3f")
             d_manual_cost = k2.number_input("賣出持有成本 (0=自算)", min_value=0.0, format="%.3f")
             
             c5, c6 = st.columns(2)
