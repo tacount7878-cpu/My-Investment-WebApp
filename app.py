@@ -6,13 +6,12 @@ from datetime import datetime
 from streamlit_gsheets import GSheetsConnection
 
 # ==========================================================
-# 1. 基礎設定 & 登入邏輯 (V22.0 修復版)
+# 1. 基礎設定 & 登入邏輯 (V23.0 穩定版)
 # ==========================================================
 st.set_page_config(page_title="Zhang's Smart Cloud Dashboard", page_icon="💰", layout="wide")
 
 def check_login():
     """檢查帳號密碼，回傳 True 代表登入成功"""
-    # 如果 Session 已經記住登入狀態，直接放行
     if st.session_state.get("logged_in", False):
         return True
 
@@ -24,31 +23,27 @@ def check_login():
         submit = st.form_submit_button("登入")
         
         if submit:
-            # 1. 先檢查 secrets 是否設定正確 (避免誤判)
             if "credentials" not in st.secrets:
                 st.error("⚠️ 尚未設定 secrets.toml，請檢查 Streamlit Cloud 後台設定！")
                 return False
 
-            # 2. 讀取正確的帳密
             correct_user = st.secrets["credentials"]["username"]
             correct_pass = st.secrets["credentials"]["password"]
 
-            # 3. 比對輸入
             if username == correct_user and password == correct_pass:
                 st.session_state["logged_in"] = True
-                st.success("登入成功！準備進入戰情室...")
-                st.rerun() # 重啟頁面
+                st.success("登入成功！")
+                st.rerun()
             else:
                 st.error("❌ 帳號或密碼錯誤")
                 
     return False
 
-# ★ 擋門神：沒登入就停在這裡
 if not check_login():
     st.stop()
 
 # ==========================================================
-# 2. 主程式 (登入成功後才會執行)
+# 2. 主程式 (包含完整的圖表邏輯)
 # ==========================================================
 with st.sidebar:
     st.info(f"👤 User: {st.secrets['credentials']['username']}")
@@ -108,27 +103,6 @@ def fetch_market_data(symbols):
             prices[sym] = h['Close'].iloc[-1] if not h.empty else 0.0
         except: prices[sym] = 0.0
     return prices, rate
-
-def format_amount(val, currency):
-    if pd.isna(val) or val == "": return ""
-    try:
-        v = float(val)
-        if str(currency).strip().upper() == "TWD": return f"{v:,.0f}" 
-        else: return f"{v:,.3f}" 
-    except: return val
-
-def format_shares(val):
-    if pd.isna(val) or val == "": return ""
-    try: return f"{float(val):,.3f}"
-    except: return val
-
-def format_roi_pct(val):
-    if pd.isna(val) or val == "": return ""
-    try:
-        if isinstance(val, str) and "%" in val: return val
-        v = float(val)
-        return f"{v:.2%}"
-    except: return val
 
 def process_trade(trade_data, holdings_df, logs_df):
     col_sym = "Yahoo代號(Symbol)"
@@ -203,7 +177,7 @@ def process_trade(trade_data, holdings_df, logs_df):
         st.session_state["last_trade_msg"] = "⚠️ Holdings 找不到此代號，僅寫入交易紀錄。"
 
 def main():
-    st.title("💰 翔翔的雲端投資戰情室 V22.0")
+    st.title("💰 翔翔的投資")
     
     NAVS = ["📊 視覺化分析", "➕ 新增交易", "📝 交易紀錄 & 績效", "⚙️ 資金設定"]
     if "nav_choice" not in st.session_state: st.session_state["nav_choice"] = NAVS[0]
@@ -240,12 +214,26 @@ def main():
     m3.metric("貸款餘額", f"${settings['loan']:,.0f}", delta_color="inverse")
     m4.metric("美元匯率", f"{rate:.2f}")
 
+    # ======================================================
+    # 📊 視覺化分析 (包含圓餅圖 V23.0)
+    # ======================================================
     if nav == "📊 視覺化分析":
         if not df_his.empty:
             fig = px.line(df_his, x=df_his.columns[0], y=df_his.columns[1], title="資產淨值走勢", markers=True)
             st.plotly_chart(fig, use_container_width=True)
+        
         if not df_h.empty:
+            # 樹狀圖
             st.plotly_chart(px.treemap(df_h, path=["投資地區", "Yahoo代號(Symbol)"], values="市值(TWD)", title="持股分佈"), use_container_width=True)
+            
+            # 🔴 這裡就是被我遺漏的圓餅圖代碼，現在加回來了！
+            c_p1, c_p2 = st.columns(2)
+            with c_p1: 
+                if "投資地區" in df_h.columns: 
+                    st.plotly_chart(px.pie(df_h, values="市值(TWD)", names="投資地區", title="投資地區佔比", hole=0.4), use_container_width=True)
+            with c_p2: 
+                if "合併鍵(GroupKey)" in df_h.columns: 
+                    st.plotly_chart(px.pie(df_h, values="市值(TWD)", names="合併鍵(GroupKey)", title="資產類別佔比", hole=0.4), use_container_width=True)
 
     elif nav == "➕ 新增交易":
         st.subheader("➕ 新增交易紀錄")
@@ -293,11 +281,8 @@ def main():
 
     elif nav == "📝 交易紀錄 & 績效":
         if not df_l.empty:
-            df_l["損益(原幣)"] = pd.to_numeric(df_l["損益(原幣)"], errors='coerce').fillna(0)
-            df_l["成本(原幣)※賣出需填"] = pd.to_numeric(df_l["成本(原幣)※賣出需填"], errors='coerce').fillna(0)
-            
-            total_pl = df_l["損益(原幣)"].sum()
-            total_cost = df_l["成本(原幣)※賣出需填"].sum()
+            total_pl = pd.to_numeric(df_l["損益(原幣)"], errors='coerce').fillna(0).sum()
+            total_cost = pd.to_numeric(df_l["成本(原幣)※賣出需填"], errors='coerce').fillna(0).sum()
             total_roi = (total_pl / total_cost) * 100 if total_cost > 0 else 0
             
             k1, k2 = st.columns(2)
