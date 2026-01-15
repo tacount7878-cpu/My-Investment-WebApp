@@ -14,7 +14,7 @@ st.set_page_config(page_title="Zhang's Smart Cloud Dashboard V24.1", page_icon="
 def check_login():
     if st.session_state.get("logged_in", False):
         return True
-    st.markdown("## 🔐 戰情室登入系統 (V24.1)")
+    st.markdown("## 🔐 翔翔系統登入")
     with st.form("login_form"):
         u = st.text_input("帳號")
         p = st.text_input("密碼", type="password")
