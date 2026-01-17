@@ -51,7 +51,8 @@ SYMBOL_MAP = {
     "BTC-USD": {"組合": "Bitcoin (比特幣)", "地區": "加密", "類別": "虛擬幣"},
 }
 
-TAIWAN_BOND_SYMBOLS = {"00679B.TWO", "00719B.TWO", "00720B.TWO"}  # ✅ 地區佔比要獨立出來的台股債
+# ✅ 台股債券：地區佔比與 Treemap 都要獨立顯示
+TAIWAN_BOND_SYMBOLS = {"00679B.TWO", "00719B.TWO", "00720B.TWO"}
 
 def get_mapping(sym):
     return SYMBOL_MAP.get(sym, {"組合": "其他", "地區": "未知", "類別": "股票"})
@@ -121,25 +122,35 @@ def build_quick_choices_from_logs(df_l: pd.DataFrame):
 
     return sorted(items, key=lambda x: x[0])
 
-# ✅ 19 欄位標準格式 + 新增「市值(新台幣)」(放在 損益 與 報酬率 中間) => 20 欄
+# ✅ trade_logs 欄位（含：市值(新台幣)）
+TRADELOG_COLS = [
+    "日期","交易類型","平台","帳戶類型","幣別","名稱","股票代號",
+    "買入價格","買入股數","賣出價格","賣出股數",
+    "手續費","交易稅","價金(原幣)",
+    "成本(原幣)※賣出需填",
+    "應收付(原幣)","損益(原幣)","市值(新台幣)","報酬率",
+    "建立時間"
+]
+
+# ✅ 初始值（用 dict 方式，避免欄位變動造成長度不符）
 INITIAL_DATA = [
-    ["2026/01/01", "初始匯入", "元大(台股)", "TWD帳戶", "TWD", "元大台灣50", "0050.TW", "", "", "", 30000, 0, 0, 1568276, 1568276, 1568276, "", "", "", ""],
-    ["2026/01/01", "初始匯入", "元大(台股)", "TWD帳戶", "TWD", "富邦台50", "006208.TW", "", "", "", 1435, 0, 0, 187473, 187473, 187473, "", "", "", ""],
-    ["2026/01/01", "初始匯入", "元大(台股)", "TWD帳戶", "TWD", "台積電", "2330.TW", "", "", "", 199, 0, 0, 301915, 301915, 301915, "", "", "", ""],
-    ["2026/01/01", "初始匯入", "元大(台股)", "TWD帳戶", "TWD", "元大美債20年", "00679B.TWO", "", "", "", 11236, 0, 0, 300412, 300412, 300412, "", "", "", ""],
-    ["2026/01/01", "初始匯入", "元大(台股)", "TWD帳戶", "TWD", "元大美債1-3", "00719B.TWO", "", "", "", 14371, 0, 0, 427779, 427779, 427779, "", "", "", ""],
-    ["2026/01/01", "初始匯入", "元大(台股)", "TWD帳戶", "TWD", "投資級公司債", "00720B.TWO", "", "", "", 8875, 0, 0, 299979, 299979, 299979, "", "", "", ""],
-    ["2026/01/01", "初始匯入", "元大複委託(美股)", "USD外幣帳戶", "USD", "Vanguard全球", "VT", "", "", "", 139, 0, 0, 18551.05, 18551.05, 18551.05, "", "", "", ""],
-    ["2026/01/01", "初始匯入", "元大複委託(美股)", "USD外幣帳戶", "USD", "特斯拉(元大)", "TSLA", "", "", "", 10, 0, 0, 4244.50, 4244.50, 4244.50, "", "", "", ""],
-    ["2026/01/01", "初始匯入", "元大複委託(美股)", "USD外幣帳戶", "USD", "Alphabet(元大)", "GOOGL", "", "", "", 34, 0, 0, 8040.35, 8040.35, 8040.35, "", "", "", ""],
-    ["2026/01/01", "初始匯入", "元大複委託(美股)", "USD外幣帳戶", "USD", "特斯拉(外幣)", "TSLA", "", "", "", 3, 0, 0, 889.14, 889.14, 889.14, "", "", "", ""],
-    ["2026/01/01", "初始匯入", "元大複委託(美股)", "USD外幣帳戶", "USD", "Alphabet(外幣)", "GOOGL", "", "", "", 2, 0, 0, 580.25, 580.25, 580.25, "", "", "", ""],
-    ["2026/01/01", "初始匯入", "IBKR", "USD外幣帳戶", "USD", "VWRA全球", "VWRA.L", "", "", "", 249.17, 0, 0, 42564.20, 42564.20, 42564.20, "", "", "", ""],
-    ["2026/01/01", "初始匯入", "IBKR", "USD外幣帳戶", "USD", "盈透證券", "IBKR", "", "", "", 3.84, 0, 0, 247.00, 247.00, 247.00, "", "", "", ""],
-    ["2026/01/01", "初始匯入", "Firstrade(FT)", "USD外幣帳戶", "USD", "特斯拉(FT)", "TSLA", "", "", "", 6.52253, 0, 0, 2899.99, 2899.99, 2899.99, "", "", "", ""],
-    ["2026/01/01", "初始匯入", "Firstrade(FT)", "USD外幣帳戶", "USD", "Alphabet(FT)", "GOOG", "", "", "", 4.5746, 0, 0, 1438.00, 1438.00, 1438.00, "", "", "", ""],
-    ["2026/01/01", "初始匯入", "Firstrade(FT)", "USD外幣帳戶", "USD", "美國大盤(FT)", "VTI", "", "", "", 3.65, 0, 0, 1224.00, 1224.00, 1224.00, "", "", "", ""],
-    ["2026/01/01", "初始匯入", "錢包", "USD外幣帳戶", "USD", "比特幣", "BTC-USD", "", "", "", 0.0764, 0, 0, 1763.68, 1763.68, 1763.68, "", "", "", ""],
+    {"日期":"2026/01/01","交易類型":"初始匯入","平台":"元大(台股)","帳戶類型":"TWD帳戶","幣別":"TWD","名稱":"元大台灣50","股票代號":"0050.TW","買入價格":"","買入股數":30000,"賣出價格":"","賣出股數":"","手續費":0,"交易稅":0,"價金(原幣)":1568276,"成本(原幣)※賣出需填":"","應收付(原幣)":1568276,"損益(原幣)":"","市值(新台幣)":1568276,"報酬率":"","建立時間":""},
+    {"日期":"2026/01/01","交易類型":"初始匯入","平台":"元大(台股)","帳戶類型":"TWD帳戶","幣別":"TWD","名稱":"富邦台50","股票代號":"006208.TW","買入價格":"","買入股數":1435,"賣出價格":"","賣出股數":"","手續費":0,"交易稅":0,"價金(原幣)":187473,"成本(原幣)※賣出需填":"","應收付(原幣)":187473,"損益(原幣)":"","市值(新台幣)":187473,"報酬率":"","建立時間":""},
+    {"日期":"2026/01/01","交易類型":"初始匯入","平台":"元大(台股)","帳戶類型":"TWD帳戶","幣別":"TWD","名稱":"台積電","股票代號":"2330.TW","買入價格":"","買入股數":199,"賣出價格":"","賣出股數":"","手續費":0,"交易稅":0,"價金(原幣)":301915,"成本(原幣)※賣出需填":"","應收付(原幣)":301915,"損益(原幣)":"","市值(新台幣)":301915,"報酬率":"","建立時間":""},
+    {"日期":"2026/01/01","交易類型":"初始匯入","平台":"元大(台股)","帳戶類型":"TWD帳戶","幣別":"TWD","名稱":"元大美債20年","股票代號":"00679B.TWO","買入價格":"","買入股數":11236,"賣出價格":"","賣出股數":"","手續費":0,"交易稅":0,"價金(原幣)":300412,"成本(原幣)※賣出需填":"","應收付(原幣)":300412,"損益(原幣)":"","市值(新台幣)":300412,"報酬率":"","建立時間":""},
+    {"日期":"2026/01/01","交易類型":"初始匯入","平台":"元大(台股)","帳戶類型":"TWD帳戶","幣別":"TWD","名稱":"元大美債1-3","股票代號":"00719B.TWO","買入價格":"","買入股數":14371,"賣出價格":"","賣出股數":"","手續費":0,"交易稅":0,"價金(原幣)":427779,"成本(原幣)※賣出需填":"","應收付(原幣)":427779,"損益(原幣)":"","市值(新台幣)":427779,"報酬率":"","建立時間":""},
+    {"日期":"2026/01/01","交易類型":"初始匯入","平台":"元大(台股)","帳戶類型":"TWD帳戶","幣別":"TWD","名稱":"投資級公司債","股票代號":"00720B.TWO","買入價格":"","買入股數":8875,"賣出價格":"","賣出股數":"","手續費":0,"交易稅":0,"價金(原幣)":299979,"成本(原幣)※賣出需填":"","應收付(原幣)":299979,"損益(原幣)":"","市值(新台幣)":299979,"報酬率":"","建立時間":""},
+    {"日期":"2026/01/01","交易類型":"初始匯入","平台":"元大複委託(美股)","帳戶類型":"USD外幣帳戶","幣別":"USD","名稱":"Vanguard全球","股票代號":"VT","買入價格":"","買入股數":139,"賣出價格":"","賣出股數":"","手續費":0,"交易稅":0,"價金(原幣)":18551.05,"成本(原幣)※賣出需填":"","應收付(原幣)":18551.05,"損益(原幣)":"","市值(新台幣)":"","報酬率":"","建立時間":""},
+    {"日期":"2026/01/01","交易類型":"初始匯入","平台":"元大複委託(美股)","帳戶類型":"USD外幣帳戶","幣別":"USD","名稱":"特斯拉(元大)","股票代號":"TSLA","買入價格":"","買入股數":10,"賣出價格":"","賣出股數":"","手續費":0,"交易稅":0,"價金(原幣)":4244.50,"成本(原幣)※賣出需填":"","應收付(原幣)":4244.50,"損益(原幣)":"","市值(新台幣)":"","報酬率":"","建立時間":""},
+    {"日期":"2026/01/01","交易類型":"初始匯入","平台":"元大複委託(美股)","帳戶類型":"USD外幣帳戶","幣別":"USD","名稱":"Alphabet(元大)","股票代號":"GOOGL","買入價格":"","買入股數":34,"賣出價格":"","賣出股數":"","手續費":0,"交易稅":0,"價金(原幣)":8040.35,"成本(原幣)※賣出需填":"","應收付(原幣)":8040.35,"損益(原幣)":"","市值(新台幣)":"","報酬率":"","建立時間":""},
+    {"日期":"2026/01/01","交易類型":"初始匯入","平台":"元大複委託(美股)","帳戶類型":"USD外幣帳戶","幣別":"USD","名稱":"特斯拉(外幣)","股票代號":"TSLA","買入價格":"","買入股數":3,"賣出價格":"","賣出股數":"","手續費":0,"交易稅":0,"價金(原幣)":889.14,"成本(原幣)※賣出需填":"","應收付(原幣)":889.14,"損益(原幣)":"","市值(新台幣)":"","報酬率":"","建立時間":""},
+    {"日期":"2026/01/01","交易類型":"初始匯入","平台":"元大複委託(美股)","帳戶類型":"USD外幣帳戶","幣別":"USD","名稱":"Alphabet(外幣)","股票代號":"GOOGL","買入價格":"","買入股數":2,"賣出價格":"","賣出股數":"","手續費":0,"交易稅":0,"價金(原幣)":580.25,"成本(原幣)※賣出需填":"","應收付(原幣)":580.25,"損益(原幣)":"","市值(新台幣)":"","報酬率":"","建立時間":""},
+    {"日期":"2026/01/01","交易類型":"初始匯入","平台":"IBKR","帳戶類型":"USD外幣帳戶","幣別":"USD","名稱":"VWRA全球","股票代號":"VWRA.L","買入價格":"","買入股數":249.17,"賣出價格":"","賣出股數":"","手續費":0,"交易稅":0,"價金(原幣)":42564.20,"成本(原幣)※賣出需填":"","應收付(原幣)":42564.20,"損益(原幣)":"","市值(新台幣)":"","報酬率":"","建立時間":""},
+    {"日期":"2026/01/01","交易類型":"初始匯入","平台":"IBKR","帳戶類型":"USD外幣帳戶","幣別":"USD","名稱":"盈透證券","股票代號":"IBKR","買入價格":"","買入股數":3.84,"賣出價格":"","賣出股數":"","手續費":0,"交易稅":0,"價金(原幣)":247.00,"成本(原幣)※賣出需填":"","應收付(原幣)":247.00,"損益(原幣)":"","市值(新台幣)":"","報酬率":"","建立時間":""},
+    {"日期":"2026/01/01","交易類型":"初始匯入","平台":"Firstrade(FT)","帳戶類型":"USD外幣帳戶","幣別":"USD","名稱":"特斯拉(FT)","股票代號":"TSLA","買入價格":"","買入股數":6.52253,"賣出價格":"","賣出股數":"","手續費":0,"交易稅":0,"價金(原幣)":2899.99,"成本(原幣)※賣出需填":"","應收付(原幣)":2899.99,"損益(原幣)":"","市值(新台幣)":"","報酬率":"","建立時間":""},
+    {"日期":"2026/01/01","交易類型":"初始匯入","平台":"Firstrade(FT)","帳戶類型":"USD外幣帳戶","幣別":"USD","名稱":"Alphabet(FT)","股票代號":"GOOG","買入價格":"","買入股數":4.5746,"賣出價格":"","賣出股數":"","手續費":0,"交易稅":0,"價金(原幣)":1438.00,"成本(原幣)※賣出需填":"","應收付(原幣)":1438.00,"損益(原幣)":"","市值(新台幣)":"","報酬率":"","建立時間":""},
+    {"日期":"2026/01/01","交易類型":"初始匯入","平台":"Firstrade(FT)","帳戶類型":"USD外幣帳戶","幣別":"USD","名稱":"美國大盤(FT)","股票代號":"VTI","買入價格":"","買入股數":3.65,"賣出價格":"","賣出股數":"","手續費":0,"交易稅":0,"價金(原幣)":1224.00,"成本(原幣)※賣出需填":"","應收付(原幣)":1224.00,"損益(原幣)":"","市值(新台幣)":"","報酬率":"","建立時間":""},
+    {"日期":"2026/01/01","交易類型":"初始匯入","平台":"錢包","帳戶類型":"USD外幣帳戶","幣別":"USD","名稱":"比特幣","股票代號":"BTC-USD","買入價格":"","買入股數":0.0764,"賣出價格":"","賣出股數":"","手續費":0,"交易稅":0,"價金(原幣)":1763.68,"成本(原幣)※賣出需填":"","應收付(原幣)":1763.68,"損益(原幣)":"","市值(新台幣)":"","報酬率":"","建立時間":""},
 ]
 
 conn = st.connection("gsheets", type=GSheetsConnection)
@@ -149,68 +160,48 @@ conn = st.connection("gsheets", type=GSheetsConnection)
 # ==========================================================
 def rebuild_data():
     df_l = conn.read(worksheet="trade_logs", ttl=0)
+
+    # ✅ 先取匯率（初始化 trade_logs 時也可用）
+    rate_init = 31.5
+    try:
+        tfx = yf.Tickers("TWD=X")
+        hist_r = tfx.tickers["TWD=X"].history(period="1d")
+        if not hist_r.empty:
+            rate_init = float(hist_r["Close"].iloc[-1])
+    except:
+        pass
+
+    # ✅ 若 trade_logs 空的：寫入初始匯入
     if df_l.empty:
-        cols = conn.read(worksheet="trade_logs", header=0).columns
-        init_df = pd.DataFrame(INITIAL_DATA, columns=cols)
-        init_df["建立時間"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        # 用 Sheet 現有欄位（若沒有就用 TRADELOG_COLS）
+        template = conn.read(worksheet="trade_logs", header=0, ttl=0)
+        cols = list(template.columns) if (template is not None and len(template.columns) > 0) else TRADELOG_COLS
+
+        init_df = pd.DataFrame([{c: "" for c in cols} for _ in range(len(INITIAL_DATA))])
+
+        now_ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        for i, row in enumerate(INITIAL_DATA):
+            for k, v in row.items():
+                if k in init_df.columns:
+                    init_df.at[i, k] = v
+            if "建立時間" in init_df.columns:
+                init_df.at[i, "建立時間"] = now_ts
+
+            # ✅ 補「市值(新台幣)」：TWD 直接填；USD 用匯率換算（初始化時用 rate_init）
+            if "市值(新台幣)" in init_df.columns:
+                cur = str(init_df.at[i, "幣別"]).strip().upper() if "幣別" in init_df.columns else ""
+                net_org = init_df.at[i, "應收付(原幣)"] if "應收付(原幣)" in init_df.columns else ""
+                try:
+                    net_org_f = float(str(net_org).replace(",", "")) if str(net_org).strip() != "" else 0.0
+                except:
+                    net_org_f = 0.0
+                init_df.at[i, "市值(新台幣)"] = net_org_f * (rate_init if cur == "USD" else 1.0)
+
         conn.update(worksheet="trade_logs", data=init_df)
         df_l = init_df
         st.toast("✅ 已執行初始匯入！")
 
     df_s = conn.read(worksheet="settings", ttl=0, header=None)
-
-    # ✅ 確保新欄位存在（市值(新台幣)）
-    REQUIRED_COLS = [
-        "日期","交易類型","平台","帳戶類型","幣別","名稱","股票代號",
-        "買入價格","買入股數","賣出價格","賣出股數",
-        "手續費","交易稅","價金(原幣)",
-        "成本(原幣)※賣出需填",
-        "應收付(原幣)","損益(原幣)","市值(新台幣)","報酬率",
-        "建立時間"
-    ]
-    for c in REQUIRED_COLS:
-        if c not in df_l.columns:
-            df_l[c] = ""
-
-    # ✅ 若舊資料市值(新台幣) 皆空，補值一次（用 價金(原幣) × 匯率 / TWD=1）
-    def _to_float(x):
-        try:
-            if x is None:
-                return float("nan")
-            s = str(x).strip()
-            if s == "" or s.lower() in {"none", "nan"}:
-                return float("nan")
-            return float(s.replace(",", ""))
-        except:
-            return float("nan")
-
-    # 先抓匯率（rebuild 會用）
-    rate_for_fill = 31.5
-    try:
-        t_fx = yf.Tickers("TWD=X")
-        hfx = t_fx.tickers["TWD=X"].history(period="1d")
-        if not hfx.empty:
-            rate_for_fill = float(hfx["Close"].iloc[-1])
-    except:
-        pass
-
-    need_fill = df_l["市值(新台幣)"].astype(str).str.strip().isin(["", "None", "nan", "NaN"]).any()
-    if need_fill:
-        changed = False
-        for idx, r in df_l.iterrows():
-            v = _to_float(r.get("市值(新台幣)", ""))
-            if pd.isna(v):
-                gross = _to_float(r.get("價金(原幣)", ""))
-                cur = str(r.get("幣別", "")).strip().upper()
-                if not pd.isna(gross):
-                    mv_twd = gross * (rate_for_fill if cur == "USD" else 1.0)
-                    df_l.at[idx, "市值(新台幣)"] = mv_twd
-                    changed = True
-        if changed:
-            # 保持欄位順序：把「市值(新台幣)」插在損益與報酬率中間
-            extra_cols = [c for c in df_l.columns if c not in REQUIRED_COLS]
-            df_l = df_l[REQUIRED_COLS + extra_cols]
-            conn.update(worksheet="trade_logs", data=df_l)
 
     inventory = {}
 
@@ -220,6 +211,7 @@ def rebuild_data():
         except:
             return 0.0
 
+    # ✅ inventory 依「代號」聚合（現階段版本）
     for _, row in df_l.iterrows():
         sym = str(row.get("股票代號", "")).strip()
         if not sym or sym.lower() == "nan":
@@ -289,7 +281,8 @@ def rebuild_data():
             "總成本(原幣)": d["cost"],
             "總市值(原幣)": mv_org,
             "未實現損益(原幣)": mv_org - d["cost"],
-            "報酬率": (mv_org - d["cost"]) / d["cost"] if d["cost"] > 0 else 0.0,
+            # ✅ 報酬率：直接存百分比數值（例如 12.34 = 12.34%）
+            "報酬率": ((mv_org - d["cost"]) / d["cost"] * 100.0) if d["cost"] > 0 else 0.0,
             "匯率": rate if d["currency"] == "USD" else 1.0,
             "總市值(TWD)": mv_twd,
             "未實現損益(TWD)": (mv_org - d["cost"]) * (rate if d["currency"] == "USD" else 1.0),
@@ -348,11 +341,145 @@ if st.session_state.get("trigger_record"):
     st.success(f"✅ 已紀錄: ${net_worth:,.0f}")
     del st.session_state["trigger_record"]
 
+# ======================================================
+# ✅ Top Metrics：資產 / 市值 / 匯率 + 淨現金流 / 已實現損益（基準起始值 + 快照後增量）
+# 你的 Excel 最新值當 baseline，不再把舊 trade_logs 重複加總
+# 增量只算：建立時間 > baseline_snapshot_ts 的新交易
+# baseline_snapshot_ts 會寫入 settings，確保重啟也不會跑掉
+# ======================================================
+
+# ✅ 你最新給的 baseline（固定起點）
+BASE_NET_CASHFLOW_TWD = 414_528.0
+BASE_REALIZED_PNL_TWD = 218_122.0
+BASE_REALIZED_ROI_PCT = 21.99  # 21.99%
+
+# 用 baseline 損益與 ROI 反推 baseline 已實現成本（避免 % 直接相加）
+BASE_REALIZED_COST_TWD = (BASE_REALIZED_PNL_TWD / (BASE_REALIZED_ROI_PCT / 100.0)) if BASE_REALIZED_ROI_PCT != 0 else 0.0
+
+# ✅ 你 Excel 這塊通常是「只算股票已實現」；要全算就改 False
+REALIZED_STOCKS_ONLY = True
+
+def _f(x):
+    try:
+        s = str(x).strip()
+        if s == "" or s.lower() in {"none", "nan"}:
+            return 0.0
+        return float(s.replace(",", ""))
+    except:
+        return 0.0
+
+# ======================================================
+# ✅ baseline snapshot time：寫入 settings（只寫一次）
+# Key: baseline_snapshot_ts
+# ======================================================
+def _read_settings_dict(df_s: pd.DataFrame) -> dict:
+    d = {}
+    if df_s is None or df_s.empty:
+        return d
+    for _, r in df_s.iterrows():
+        try:
+            k = str(r[0]).strip()
+            v = str(r[1]).strip()
+            d[k] = v
+        except:
+            pass
+    return d
+
+def _save_setting_key(df_s: pd.DataFrame, key: str, value: str):
+    # df_s 是 settings（header=None）
+    if df_s is None or df_s.empty:
+        new_s = pd.DataFrame([[key, value]])
+    else:
+        tmp = df_s.copy()
+        sd = _read_settings_dict(tmp)
+        sd[key] = value
+        new_s = pd.DataFrame([[k, sd[k]] for k in sd.keys()])
+    conn.update(worksheet="settings", data=new_s)
+
+df_s_now = conn.read(worksheet="settings", ttl=0, header=None)
+s_dict_raw = _read_settings_dict(df_s_now)
+
+# 只在第一次設定 baseline 時寫入（之後不要動它）
+if "baseline_snapshot_ts" not in s_dict_raw or str(s_dict_raw.get("baseline_snapshot_ts", "")).strip() == "":
+    baseline_snapshot_ts = datetime.now()
+    _save_setting_key(df_s_now, "baseline_snapshot_ts", baseline_snapshot_ts.strftime("%Y-%m-%d %H:%M:%S"))
+else:
+    try:
+        baseline_snapshot_ts = datetime.strptime(str(s_dict_raw["baseline_snapshot_ts"]).strip(), "%Y-%m-%d %H:%M:%S")
+    except:
+        baseline_snapshot_ts = datetime.now()
+        _save_setting_key(df_s_now, "baseline_snapshot_ts", baseline_snapshot_ts.strftime("%Y-%m-%d %H:%M:%S"))
+
+# ======================================================
+# ✅ 增量：只算「baseline_snapshot_ts 之後」的新交易
+# ======================================================
+net_cashflow_delta_twd = 0.0
+realized_pnl_delta_twd = 0.0
+realized_cost_delta_twd = 0.0
+
+if df_l is not None and not df_l.empty:
+    for _, r in df_l.iterrows():
+        ttype = str(r.get("交易類型", "")).strip()
+        if ttype not in ("買入", "賣出"):
+            continue
+
+        # 用建立時間切分增量（沒有建立時間就當作舊資料，不算增量）
+        bt = str(r.get("建立時間", "")).strip()
+        if bt == "" or bt.lower() in {"none", "nan"}:
+            continue
+        try:
+            row_ts = datetime.strptime(bt, "%Y-%m-%d %H:%M:%S")
+        except:
+            continue
+
+        if row_ts <= baseline_snapshot_ts:
+            continue  # ✅ baseline 以前的不算增量
+
+        sym = normalize_symbol(str(r.get("股票代號", "")).strip())
+        cur = str(r.get("幣別", "")).strip().upper() or infer_currency(sym)
+        fx = rate if cur == "USD" else 1.0
+
+        net_org = _f(r.get("應收付(原幣)", 0))
+        net_twd = net_org * fx
+
+        # 淨現金流：買入(負)、賣出(正)
+        if ttype == "買入":
+            net_cashflow_delta_twd -= net_twd
+        else:
+            net_cashflow_delta_twd += net_twd
+
+            # 已實現：只統計賣出
+            if REALIZED_STOCKS_ONLY and get_mapping(sym).get("類別") != "股票":
+                continue
+
+            sell_cost_org = _f(r.get("成本(原幣)※賣出需填", 0))
+            profit_org = _f(r.get("損益(原幣)", 0))
+            if profit_org == 0.0:
+                profit_org = (net_org - sell_cost_org)
+
+            realized_pnl_delta_twd += profit_org * fx
+            realized_cost_delta_twd += sell_cost_org * fx
+
+# ======================================================
+# ✅ 最終顯示：baseline + 增量
+# ======================================================
+net_cashflow_total_twd = BASE_NET_CASHFLOW_TWD + net_cashflow_delta_twd
+realized_pnl_total_twd = BASE_REALIZED_PNL_TWD + realized_pnl_delta_twd
+realized_cost_total_twd = BASE_REALIZED_COST_TWD + realized_cost_delta_twd
+realized_roi_total_pct = (realized_pnl_total_twd / realized_cost_total_twd * 100.0) if realized_cost_total_twd > 0 else 0.0
+
+# 第一排：資產 / 市值 / 匯率
 m1, m2, m3 = st.columns(3)
 m1.metric("資產總淨值", f"${net_worth:,.0f}")
-stock_val = df_h["總市值(TWD)"].sum() if not df_h.empty else 0
+stock_val = df_h["總市值(TWD)"].sum() if (df_h is not None and not df_h.empty) else 0
 m2.metric("證券總市值", f"${stock_val:,.0f}")
 m3.metric("美金匯率", f"{rate:.2f}")
+
+# 第二排：淨現金流 / 已實現損益（基準 + 快照後增量）
+m4, m5, m6 = st.columns(3)
+m4.metric("淨現金流(TWD)（正=錢回收、負=支出）", f"{net_cashflow_total_twd:,.0f}")
+m5.metric("已實現總損益(TWD)", f"{realized_pnl_total_twd:,.0f}")
+m6.metric("已實現總損益(%)", f"{realized_roi_total_pct:.2f}%")
 
 st.divider()
 
@@ -364,14 +491,20 @@ if "pending_nav" in st.session_state:
 
 nav = st.radio("", NAVS, horizontal=True, key="nav_choice")
 
+# ==========================================================
+# 5. 各頁面
+# ==========================================================
 if nav == "📊 視覺化分析":
     try:
         df_hist = conn.read(worksheet="net_worth_history", ttl=0)
         if not df_hist.empty:
-            st.plotly_chart(
-                px.line(df_hist, x="時間", y="資產總淨值(TWD)", title="淨值走勢", markers=True),
-                use_container_width=True
-            )
+            df_hist2 = df_hist.copy()
+            df_hist2["時間_dt"] = pd.to_datetime(df_hist2["時間"], errors="coerce")
+            df_hist2 = df_hist2.dropna(subset=["時間_dt"]).sort_values("時間_dt")
+
+            fig = px.line(df_hist2, x="時間_dt", y="資產總淨值(TWD)", title="淨值走勢", markers=True)
+            fig.update_xaxes(tickformat="%Y/%m/%d")  # ✅ 只顯示年月日
+            st.plotly_chart(fig, use_container_width=True)
     except:
         st.info("尚無歷史紀錄")
 
@@ -416,7 +549,6 @@ if nav == "📊 視覺化分析":
                 use_container_width=True
             )
 
-
 elif nav == "➕ 新增交易":
     st.subheader("➕ 新增交易（賣出：必填成本；應收付可手填；送出即自動算損益/報酬率）")
 
@@ -434,15 +566,8 @@ elif nav == "➕ 新增交易":
             raise ValueError(f"{field_name} 不可為負數")
         return v
 
-    REQUIRED_COLS = [
-        "日期","交易類型","平台","帳戶類型","幣別","名稱","股票代號",
-        "買入價格","買入股數","賣出價格","賣出股數",
-        "手續費","交易稅","價金(原幣)",
-        "成本(原幣)※賣出需填",
-        "應收付(原幣)","損益(原幣)","市值(新台幣)","報酬率",
-        "建立時間"
-    ]
-    for c in REQUIRED_COLS:
+    # ✅ 確保欄位存在（含：市值(新台幣)）
+    for c in TRADELOG_COLS:
         if c not in df_l.columns:
             df_l[c] = ""
 
@@ -451,39 +576,44 @@ elif nav == "➕ 新增交易":
         d_date = c1.date_input("日期", datetime.now())
         d_type = c2.selectbox("類型", ["買入", "賣出"])
 
-        # ✅ 下拉多一個「新增股票」
+        # ✅ 快速選擇：加一個「新增股票」
         quick_items = [
-            ("（不選）", "", "", "", "", ""),
-            ("➕ 新增股票", "__NEW__", "", "", "", ""),
+            ("➕ 新增股票（手動輸入代號）", "__NEW__", "", "", "", ""),
+            ("（不選）", "", "", "", "", "")
         ] + build_quick_choices_from_logs(df_l)
 
         c3, c4 = st.columns(2)
         quick_pick = c3.selectbox("快速選擇（可不選）", options=quick_items, format_func=lambda x: x[0])
         d_sym_raw = c4.text_input("代號（如 TSLA, 2330, 2330.TW）", value="")
 
-        is_new_mode = (quick_pick[1] == "__NEW__")
-
         d_sym_raw = d_sym_raw.strip() if d_sym_raw else ""
-        if is_new_mode:
+        if quick_pick[1] == "__NEW__":
             d_sym = normalize_symbol(d_sym_raw) if d_sym_raw else ""
+            auto_platform = ""
+            auto_account = ""
+            auto_currency = infer_currency(d_sym) if d_sym else ""
+            auto_name = ""
         else:
             d_sym = normalize_symbol(d_sym_raw) if d_sym_raw else quick_pick[1]
+            auto_platform = quick_pick[2]
+            auto_account = quick_pick[3]
+            auto_currency = quick_pick[4] or (infer_currency(d_sym) if d_sym else "")
+            auto_name = quick_pick[5]
 
-        auto_platform = quick_pick[2]
-        auto_account = quick_pick[3]
-        auto_currency = quick_pick[4] or (infer_currency(d_sym) if d_sym else "")
-        auto_name = quick_pick[5]
+        # ✅ 平台/帳戶/幣別：允許你手動改（新股票時就靠這三個）
+        cP1, cP2, cP3 = st.columns(3)
+        platform_in = cP1.text_input("平台（可留空）", value=auto_platform)
+        account_in = cP2.text_input("帳戶類型（可留空）", value=auto_account)
+        currency_in = cP3.selectbox("幣別", options=["TWD", "USD"], index=(0 if (auto_currency or "TWD") == "TWD" else 1))
 
         d_name = st.text_input("名稱（選填）", value="")
 
-        if is_new_mode:
-            st.caption("模式：新增股票。請在右側「代號」輸入新標的代號後送出。")
         if d_sym:
-            st.caption(f"系統代號：{d_sym}（賣出/抓價用此代號）｜平台：{auto_platform or '—'}｜帳戶：{auto_account or '—'}")
+            st.caption(f"系統代號：{d_sym}（賣出/抓價用此代號）｜平台：{platform_in or '—'}｜帳戶：{account_in or '—'}｜幣別：{currency_in}")
 
         c5, c6 = st.columns(2)
         s_price = c5.text_input("價格 (原幣)", value="", placeholder="例如 1700 或 1700.5")
-        s_shares = c6.text_input("股數", value="", placeholder="例如 100 或 6.52253")
+        s_shares = c6.text_input("股數", value="", placeholder="例如 100 或 6.52253（台股可整數）")
 
         c7, c8 = st.columns(2)
         s_fee = c7.text_input("手續費", value="", placeholder="可空白=0")
@@ -514,7 +644,7 @@ elif nav == "➕ 新增交易":
                 d_fee = 0.0 if (s_fee or "").strip() == "" else parse_num(s_fee, "手續費", allow_zero=True)
                 d_tax = 0.0 if (s_tax or "").strip() == "" else parse_num(s_tax, "交易稅", allow_zero=True)
 
-                currency = auto_currency if auto_currency else infer_currency(d_sym)
+                currency = currency_in
                 name_final = d_name.strip() if d_name.strip() else (auto_name if auto_name else d_sym)
 
                 gross = float(d_price) * float(d_shares)
@@ -525,8 +655,8 @@ elif nav == "➕ 新增交易":
                 else:
                     net_receivable = (gross + float(d_fee)) if d_type == "買入" else (gross - float(d_fee) - float(d_tax))
 
-                # ✅ 市值(新台幣)：台股=TWD 그대로；美股/其他(USD) 乘匯率
-                mv_twd = gross * (rate if str(currency).upper() == "USD" else 1.0)
+                # ✅ 市值(新台幣)：直接把「應收付(原幣)」換算成 TWD（TWD=原值，USD=乘匯率）
+                mv_twd_trade = float(net_receivable) * (rate if currency == "USD" else 1.0)
 
                 # 賣出：成本必填，且 ROI 存「百分比數值」
                 sell_cost_to_write = ""
@@ -545,8 +675,8 @@ elif nav == "➕ 新增交易":
                 row_data.update({
                     "日期": d_date.strftime("%Y/%m/%d"),
                     "交易類型": d_type,
-                    "平台": auto_platform,
-                    "帳戶類型": auto_account,
+                    "平台": platform_in,
+                    "帳戶類型": account_in,
                     "股票代號": d_sym,
                     "名稱": name_final,
                     "幣別": currency,
@@ -564,7 +694,7 @@ elif nav == "➕ 新增交易":
                     "應收付(原幣)": float(net_receivable),
 
                     "損益(原幣)": float(profit) if d_type == "賣出" else "",
-                    "市值(新台幣)": float(mv_twd),
+                    "市值(新台幣)": float(mv_twd_trade),
                     "報酬率": float(roi_pct) if d_type == "賣出" else "",
 
                     "建立時間": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -572,16 +702,12 @@ elif nav == "➕ 新增交易":
 
                 df_new = pd.DataFrame([row_data], columns=df_l.columns)
                 df_l2 = pd.concat([df_l, df_new], ignore_index=True)
-
-                # ✅ 固定顯示欄位順序，確保「市值(新台幣)」在損益與報酬率中間
-                extra_cols = [c for c in df_l2.columns if c not in REQUIRED_COLS]
-                df_l2 = df_l2[REQUIRED_COLS + extra_cols]
-
                 conn.update(worksheet="trade_logs", data=df_l2)
 
+                # 重算 holdings
                 rebuild_data()
 
-                extra = f"｜應收付:{net_receivable:,.4f}｜市值(TWD):{mv_twd:,.2f}"
+                extra = f"｜應收付:{net_receivable:,.4f}｜市值(TWD):{mv_twd_trade:,.0f}"
                 if d_type == "賣出":
                     extra += f"｜損益:{profit:,.4f}｜報酬率:{roi_pct:.2f}%"
 
@@ -594,7 +720,71 @@ elif nav == "➕ 新增交易":
                 st.error(str(e))
 
 elif nav == "📝 交易紀錄 & 績效":
-    st.dataframe(df_l, use_container_width=True)
+    # ✅ 顯示格式：
+    # - TWD 金額：不顯示小數
+    # - 台股股數：不顯示小數
+    # - 美股/美金：保留小數
+    df_view = df_l.copy()
+
+    money_cols = [
+        "手續費", "交易稅", "價金(原幣)",
+        "成本(原幣)※賣出需填", "應收付(原幣)", "損益(原幣)", "市值(新台幣)"
+    ]
+    share_cols = ["買入股數", "賣出股數"]
+
+    def is_tw_symbol(sym: str) -> bool:
+        s = normalize_symbol(str(sym).strip())
+        return s.endswith(".TW") or s.endswith(".TWO")
+
+    # 轉數值（失敗就 NaN）
+    for c in money_cols + share_cols + ["報酬率"]:
+        if c in df_view.columns:
+            df_view[c] = pd.to_numeric(df_view[c], errors="coerce")
+
+    # 先做必要 round：TWD 金額整數、台股股數整數
+    if "幣別" in df_view.columns:
+        mask_twd = df_view["幣別"].astype(str).str.upper().eq("TWD")
+        for c in money_cols:
+            if c in df_view.columns:
+                df_view.loc[mask_twd, c] = df_view.loc[mask_twd, c].round(0)
+
+    if "股票代號" in df_view.columns:
+        mask_tw = df_view["股票代號"].apply(is_tw_symbol)
+        for c in share_cols:
+            if c in df_view.columns:
+                df_view.loc[mask_tw, c] = df_view.loc[mask_tw, c].round(0)
+
+    # 格式化：整數顯示無小數；非整數顯示小數
+    def fmt_num(v):
+        if pd.isna(v):
+            return ""
+        if abs(v - round(v)) < 1e-9:
+            return f"{int(round(v)):,}"
+        return f"{v:,.4f}"
+
+    def fmt_share(v):
+        if pd.isna(v):
+            return ""
+        if abs(v - round(v)) < 1e-9:
+            return f"{int(round(v)):,}"
+        return f"{v:,.5f}"
+
+    def fmt_roi(v):
+        if pd.isna(v):
+            return ""
+        return f"{v:.2f}%"
+
+    fmt = {}
+    for c in money_cols:
+        if c in df_view.columns:
+            fmt[c] = fmt_num
+    for c in share_cols:
+        if c in df_view.columns:
+            fmt[c] = fmt_share
+    if "報酬率" in df_view.columns:
+        fmt["報酬率"] = fmt_roi
+
+    st.dataframe(df_view.style.format(fmt), use_container_width=True)
 
 elif nav == "⚙️ 資金設定":
     c1, c2 = st.columns(2)
